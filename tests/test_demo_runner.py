@@ -135,10 +135,11 @@ class DemoRunnerTests(unittest.TestCase):
 
     def test_end_to_end_demo_execution_from_fixture_writes_notification_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
             result = run_demo_end_to_end(
                 DemoRunRequest(
                     fixture_path=FIXTURE_PATH,
-                    output_dir=Path(temp_dir),
+                    output_dir=output_dir,
                 ),
                 as_of=self.now,
                 sender=lambda _record, _config: None,
@@ -146,14 +147,21 @@ class DemoRunnerTests(unittest.TestCase):
 
             pipeline_summary = json.loads(result.demo_result.written_artifacts.summary_json_path.read_text(encoding="utf-8"))
             notification_report = json.loads(result.notification_report_path.read_text(encoding="utf-8"))
+            status_report_path = output_dir / "notification_status_report.json"
+            status_report = json.loads(status_report_path.read_text(encoding="utf-8"))
             self.assertTrue(result.demo_result.written_artifacts.summary_json_path.exists())
             self.assertTrue(result.notification_database_path.exists())
             self.assertTrue(result.notification_report_path.exists())
+            self.assertTrue(status_report_path.exists())
 
         self.assertEqual(pipeline_summary["pipeline"]["alert_built"], True)
         self.assertEqual(notification_report["notification_summary"]["total_alerts"], 1)
         self.assertEqual(notification_report["notification_summary"]["sent_count"], 1)
         self.assertEqual(notification_report["schedule_summary"]["completed_count"], 1)
+        self.assertEqual(status_report["processed_successfully_count"], 1)
+        self.assertEqual(status_report["pending_count"], 0)
+        self.assertEqual(status_report["failed_count"], 0)
+        self.assertTrue(status_report["final_notification_outcome_summary"]["all_processed"])
 
     def test_no_alert_path_writes_empty_notification_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -161,22 +169,28 @@ class DemoRunnerTests(unittest.TestCase):
             payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
             payload["market_snapshot"]["liquidity_usd"] = 200000.0
             negative_fixture.write_text(json.dumps(payload), encoding="utf-8")
+            output_dir = Path(temp_dir) / "out"
 
             result = run_demo_end_to_end(
                 DemoRunRequest(
                     fixture_path=negative_fixture,
-                    output_dir=Path(temp_dir) / "out",
+                    output_dir=output_dir,
                 ),
                 as_of=self.now,
                 sender=lambda _record, _config: None,
             )
 
             notification_report = json.loads(result.notification_report_path.read_text(encoding="utf-8"))
+            status_report_path = output_dir / "notification_status_report.json"
+            status_report = json.loads(status_report_path.read_text(encoding="utf-8"))
 
         self.assertIsNone(result.demo_result.pipeline_result.alert_build_result)
         self.assertEqual(notification_report["notification_summary"]["total_alerts"], 0)
         self.assertEqual(notification_report["schedule_summary"]["total_alerts"], 0)
         self.assertEqual(result.schedule_processing_results, ())
+        self.assertEqual(status_report["processed_successfully_count"], 0)
+        self.assertEqual(status_report["pending_count"], 0)
+        self.assertEqual(status_report["failed_count"], 0)
 
     def test_cli_uses_default_fixture_and_prints_shell_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

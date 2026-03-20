@@ -19,10 +19,13 @@ from fresh_capital.manifest import (
     RunManifestArtifacts,
     RunManifestNotificationSummary,
     RunManifestPipelineSummary,
+    build_run_artifacts_summary,
     list_run_manifests,
     main as manifest_main,
+    read_run_artifacts_summary,
     read_latest_run_manifest,
     read_run_manifest,
+    write_run_artifacts_summary,
     write_run_manifest,
 )
 
@@ -60,6 +63,15 @@ class RunManifestTests(unittest.TestCase):
             self.assertTrue(manifest is not None and manifest_dir.exists())
             self.assertTrue((output_dir / "pipeline_result.json").exists())
             self.assertTrue((output_dir / "notification_report.json").exists())
+            self.assertTrue((output_dir / "notification_status_report.json").exists())
+            self.assertTrue((output_dir / "artifacts_summary.json").exists())
+            artifacts_summary = read_run_artifacts_summary(output_dir / "artifacts_summary.json")
+            self.assertTrue(artifacts_summary.all_artifacts_present)
+            self.assertEqual(artifacts_summary.missing_artifacts, ())
+            copy_path = output_dir / "artifacts_summary.copy.json"
+            written_copy = write_run_artifacts_summary(artifacts_summary, copy_path)
+            copied_summary = read_run_artifacts_summary(written_copy)
+            self.assertEqual(copied_summary.to_dict(), artifacts_summary.to_dict())
 
         self.assertEqual(exit_code, 0)
         self.assertIsNotNone(manifest)
@@ -92,6 +104,11 @@ class RunManifestTests(unittest.TestCase):
             )
             manifest = read_latest_run_manifest(output_dir / "manifests")
             self.assertTrue(manifest is not None and manifest.manifest_path.exists())
+            artifacts_summary = build_run_artifacts_summary(
+                manifest,
+                status_report_path=output_dir / "notification_status_report.json",
+                artifacts_summary_path=output_dir / "artifacts_summary.json",
+            )
 
         self.assertEqual(exit_code, 0)
         assert manifest is not None
@@ -99,6 +116,7 @@ class RunManifestTests(unittest.TestCase):
         self.assertFalse(manifest.notification_summary.notification_queued)
         self.assertFalse(manifest.notification_summary.notifications_processed)
         self.assertEqual(manifest.notification_summary.total_alerts, 0)
+        self.assertTrue(artifacts_summary.all_artifacts_present)
 
     def test_read_latest_manifest_and_specific_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -211,6 +229,11 @@ class RunManifestTests(unittest.TestCase):
             )
             write_run_manifest(cloned_1)
             write_run_manifest(cloned_2)
+            artifacts_summary = build_run_artifacts_summary(
+                cloned_2,
+                status_report_path=output_dir_2 / "notification_status_report.json",
+                artifacts_summary_path=shared_manifest_dir / "artifacts_summary.json",
+            )
 
             manifests = list_run_manifests(shared_manifest_dir)
             latest = read_latest_run_manifest(shared_manifest_dir)
@@ -222,6 +245,7 @@ class RunManifestTests(unittest.TestCase):
         self.assertEqual(latest.generated_at.isoformat(), "2026-03-20T12:30:00+00:00")
         self.assertEqual(first.run_id, manifests[0].run_id)
         self.assertEqual(first.manifest_path, manifests[0].manifest_path)
+        self.assertFalse(artifacts_summary.missing_artifacts)
 
     def test_manifest_cli_paths_and_invalid_input_handling(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -266,6 +290,8 @@ class RunManifestTests(unittest.TestCase):
             bad_manifest.write_text(json.dumps({"bad": True}), encoding="utf-8")
             with self.assertRaises(ValueError):
                 read_run_manifest(bad_manifest)
+            with self.assertRaises(ValueError):
+                read_run_artifacts_summary(bad_manifest)
 
         self.assertEqual(latest_payload["run_id"], show_payload["run_id"])
         self.assertEqual(len(list_payload), 1)

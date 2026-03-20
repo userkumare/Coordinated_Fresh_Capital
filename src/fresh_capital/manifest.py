@@ -113,6 +113,42 @@ class RunManifest:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class RunArtifactsSummary:
+    generated_at: datetime
+    output_dir: Path
+    manifest_path: Path
+    artifacts_summary_path: Path
+    summary_json_path: Path
+    summary_pretty_json_path: Path
+    alert_log_path: Path
+    delivery_database_path: Path
+    delivery_status_log_path: Path
+    notification_database_path: Path
+    notification_report_path: Path
+    notification_status_report_path: Path
+    all_artifacts_present: bool
+    missing_artifacts: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "all_artifacts_present": self.all_artifacts_present,
+            "alert_log_path": str(self.alert_log_path),
+            "artifacts_summary_path": str(self.artifacts_summary_path),
+            "delivery_database_path": str(self.delivery_database_path),
+            "delivery_status_log_path": str(self.delivery_status_log_path),
+            "generated_at": self.generated_at.isoformat(),
+            "manifest_path": str(self.manifest_path),
+            "missing_artifacts": list(self.missing_artifacts),
+            "notification_database_path": str(self.notification_database_path),
+            "notification_report_path": str(self.notification_report_path),
+            "notification_status_report_path": str(self.notification_status_report_path),
+            "output_dir": str(self.output_dir),
+            "summary_json_path": str(self.summary_json_path),
+            "summary_pretty_json_path": str(self.summary_pretty_json_path),
+        }
+
+
 def build_run_manifest(
     result: DemoEndToEndResult,
     *,
@@ -190,6 +226,91 @@ def build_run_manifest(
         artifacts=artifacts,
         manifest_path=manifest_path,
     )
+
+
+def build_run_artifacts_summary(
+    manifest: RunManifest,
+    *,
+    status_report_path: str | Path | None = None,
+    artifacts_summary_path: str | Path | None = None,
+) -> RunArtifactsSummary:
+    if not isinstance(manifest, RunManifest):
+        raise TypeError("manifest must be a RunManifest")
+
+    generated_at = manifest.generated_at
+    output_dir = manifest.output_dir.resolve()
+    normalized_manifest_path = manifest.manifest_path.resolve()
+    normalized_status_report_path = _normalize_path(
+        status_report_path or (output_dir / "notification_status_report.json")
+    ).resolve()
+    normalized_artifacts_summary_path = _normalize_path(
+        artifacts_summary_path or (output_dir / "artifacts_summary.json")
+    ).resolve()
+
+    required_artifacts: list[tuple[str, Path]] = [
+        ("manifest_path", normalized_manifest_path),
+        ("summary_json_path", manifest.artifacts.summary_json_path.resolve()),
+        ("summary_pretty_json_path", manifest.artifacts.summary_pretty_json_path.resolve()),
+        ("notification_database_path", manifest.artifacts.notification_database_path.resolve()),
+        ("notification_report_path", manifest.artifacts.notification_report_path.resolve()),
+        ("notification_status_report_path", normalized_status_report_path),
+    ]
+    if manifest.pipeline_summary.alert_built:
+        required_artifacts.extend(
+            [
+                ("alert_log_path", manifest.artifacts.alert_log_path.resolve()),
+                ("delivery_database_path", manifest.artifacts.delivery_database_path.resolve()),
+                ("delivery_status_log_path", manifest.artifacts.delivery_status_log_path.resolve()),
+            ]
+        )
+    missing_artifacts = tuple(name for name, path in required_artifacts if not path.exists())
+    return RunArtifactsSummary(
+        generated_at=generated_at,
+        output_dir=output_dir,
+        manifest_path=normalized_manifest_path,
+        artifacts_summary_path=normalized_artifacts_summary_path,
+        summary_json_path=manifest.artifacts.summary_json_path.resolve(),
+        summary_pretty_json_path=manifest.artifacts.summary_pretty_json_path.resolve(),
+        alert_log_path=manifest.artifacts.alert_log_path.resolve(),
+        delivery_database_path=manifest.artifacts.delivery_database_path.resolve(),
+        delivery_status_log_path=manifest.artifacts.delivery_status_log_path.resolve(),
+        notification_database_path=manifest.artifacts.notification_database_path.resolve(),
+        notification_report_path=manifest.artifacts.notification_report_path.resolve(),
+        notification_status_report_path=normalized_status_report_path,
+        all_artifacts_present=not missing_artifacts,
+        missing_artifacts=missing_artifacts,
+    )
+
+
+def ensure_run_artifacts_complete(
+    manifest: RunManifest,
+    *,
+    status_report_path: str | Path | None = None,
+    artifacts_summary_path: str | Path | None = None,
+) -> RunArtifactsSummary:
+    summary = build_run_artifacts_summary(
+        manifest,
+        status_report_path=status_report_path,
+        artifacts_summary_path=artifacts_summary_path,
+    )
+    if not summary.all_artifacts_present:
+        raise ValueError(f"missing run artifacts: {', '.join(summary.missing_artifacts)}")
+    return summary
+
+
+def write_run_artifacts_summary(summary: RunArtifactsSummary, summary_path: str | Path) -> Path:
+    if not isinstance(summary, RunArtifactsSummary):
+        raise TypeError("summary must be a RunArtifactsSummary")
+    path = _normalize_path(summary_path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(summary.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def read_run_artifacts_summary(summary_path: str | Path) -> RunArtifactsSummary:
+    path = _normalize_path(summary_path).resolve()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return _run_artifacts_summary_from_payload(payload)
 
 
 def write_run_manifest(manifest: RunManifest) -> Path:
@@ -345,6 +466,52 @@ def _manifest_from_payload(payload: dict[str, Any], *, manifest_path: Path) -> R
             manifest_path=Path(manifest_path_value),
         ),
         manifest_path=manifest_path,
+    )
+
+
+def _run_artifacts_summary_from_payload(payload: dict[str, Any]) -> RunArtifactsSummary:
+    if not isinstance(payload, dict):
+        raise ValueError("artifacts summary root must be a JSON object")
+
+    required_keys = [
+        "generated_at",
+        "output_dir",
+        "manifest_path",
+        "artifacts_summary_path",
+        "summary_json_path",
+        "summary_pretty_json_path",
+        "alert_log_path",
+        "delivery_database_path",
+        "delivery_status_log_path",
+        "notification_database_path",
+        "notification_report_path",
+        "notification_status_report_path",
+        "all_artifacts_present",
+        "missing_artifacts",
+    ]
+    for key in required_keys:
+        if key not in payload:
+            raise ValueError(f"{key} is required")
+
+    missing_artifacts_payload = payload.get("missing_artifacts")
+    if not isinstance(missing_artifacts_payload, list):
+        raise ValueError("missing_artifacts must be a JSON array")
+
+    return RunArtifactsSummary(
+        generated_at=datetime.fromisoformat(payload["generated_at"]),
+        output_dir=Path(payload["output_dir"]),
+        manifest_path=Path(payload["manifest_path"]),
+        artifacts_summary_path=Path(payload["artifacts_summary_path"]),
+        summary_json_path=Path(payload["summary_json_path"]),
+        summary_pretty_json_path=Path(payload["summary_pretty_json_path"]),
+        alert_log_path=Path(payload["alert_log_path"]),
+        delivery_database_path=Path(payload["delivery_database_path"]),
+        delivery_status_log_path=Path(payload["delivery_status_log_path"]),
+        notification_database_path=Path(payload["notification_database_path"]),
+        notification_report_path=Path(payload["notification_report_path"]),
+        notification_status_report_path=Path(payload["notification_status_report_path"]),
+        all_artifacts_present=bool(payload["all_artifacts_present"]),
+        missing_artifacts=tuple(str(item) for item in missing_artifacts_payload),
     )
 
 

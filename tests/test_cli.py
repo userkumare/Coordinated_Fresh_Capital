@@ -40,8 +40,10 @@ class FinalCliTests(unittest.TestCase):
             self.assertEqual(summary["notifications_processed"], 1)
             self.assertIn("manifest_path", summary)
             self.assertIn("run_id", summary)
+            self.assertIn("artifacts_summary_path", summary)
             self.assertTrue((output_dir / "pipeline_result.json").exists())
             self.assertTrue((output_dir / "notification_report.json").exists())
+            self.assertTrue((output_dir / "artifacts_summary.json").exists())
             self.assertTrue(Path(summary["manifest_path"]).exists())
             self.assertTrue((output_dir / "manifests").exists())
             self.assertEqual(stderr_lines[0]["event"], "run_started")
@@ -69,7 +71,66 @@ class FinalCliTests(unittest.TestCase):
             self.assertEqual(summary["alerts_triggered"], 1)
             self.assertEqual(summary["notification_sent_count"], 1)
             self.assertIn("manifest_path", summary)
+            self.assertIn("artifacts_summary_path", summary)
             self.assertTrue((Path(temp_dir) / "pipeline_result.json").exists())
+
+    def test_status_command_retrieves_latest_completed_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "--fixture-path",
+                        str(FIXTURE_PATH),
+                        "--output-dir",
+                        str(Path(temp_dir)),
+                    ],
+                    sender=lambda _record, _config: None,
+                )
+
+            summary = json.loads(stdout.getvalue())
+            status_stdout = StringIO()
+            status_stderr = StringIO()
+            with redirect_stdout(status_stdout), redirect_stderr(status_stderr):
+                status_exit_code = main(
+                    [
+                        "status",
+                        "--manifests-dir",
+                        str(Path(temp_dir) / "manifests"),
+                    ]
+                )
+
+            status_payload = json.loads(status_stdout.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(status_exit_code, 0)
+        self.assertEqual(status_payload["run_id"], summary["run_id"])
+        self.assertTrue(status_payload["artifacts_summary"]["all_artifacts_present"])
+        self.assertEqual(status_payload["report"]["processed_successfully_count"], 1)
+        self.assertEqual(status_payload["report"]["pending_count"], 0)
+        self.assertEqual(status_payload["report"]["failed_count"], 0)
+        self.assertTrue(status_payload["report"]["final_notification_outcome_summary"]["all_processed"])
+        self.assertEqual(status_stderr.getvalue(), "")
+
+    def test_invalid_status_request_returns_deterministic_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status_stdout = StringIO()
+            status_stderr = StringIO()
+            with redirect_stdout(status_stdout), redirect_stderr(status_stderr):
+                exit_code = main(
+                    [
+                        "status",
+                        "--manifest-path",
+                        str(Path(temp_dir) / "missing-manifest.json"),
+                    ]
+                )
+
+            stderr_lines = [json.loads(line) for line in status_stderr.getvalue().splitlines() if line]
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(status_stdout.getvalue(), "")
+        self.assertEqual(stderr_lines[-1]["event"], "status_failed")
+        self.assertEqual(stderr_lines[-1]["error_type"], "FileNotFoundError")
 
     def test_invalid_cli_argument_handling(self) -> None:
         with redirect_stderr(StringIO()):

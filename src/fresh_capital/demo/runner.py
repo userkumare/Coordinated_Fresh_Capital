@@ -18,6 +18,10 @@ from fresh_capital.notifications.scheduling import (
 )
 from fresh_capital.domain.enums import ServiceType, SourceType
 from fresh_capital.notifications.webhook import AlertNotificationConfig
+from fresh_capital.notifications.verification import (
+    build_alert_completion_status_report,
+    write_alert_completion_status_report,
+)
 from fresh_capital.pipeline.orchestrator import (
     FreshCapitalPipelineRequest,
     FreshCapitalPipelineResult,
@@ -167,6 +171,7 @@ def run_demo_end_to_end(
     output_dir = _normalize_path(request.output_dir, "output_dir")
     notification_database_path = output_dir / "notification_state.sqlite"
     notification_report_path = output_dir / "notification_report.json"
+    notification_status_report_path = output_dir / "notification_status_report.json"
     processed_at = as_of or _infer_processed_at(demo_result)
     schedule_processing_results: tuple[AlertScheduleProcessingResult, ...] = ()
 
@@ -187,6 +192,8 @@ def run_demo_end_to_end(
 
     notification_report = build_notification_ops_report(notification_database_path, as_of=processed_at)
     _write_json(notification_report_path, notification_report.to_dict(), indent=None)
+    status_report = build_alert_completion_status_report(notification_database_path, checked_at=processed_at)
+    write_alert_completion_status_report(status_report, notification_status_report_path)
     return DemoEndToEndResult(
         demo_result=demo_result,
         notification_database_path=notification_database_path,
