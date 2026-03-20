@@ -5,6 +5,14 @@ from fresh_capital.alerts.builder import (
     AlertBuildSummary,
     build_fresh_capital_alert,
 )
+from fresh_capital.alerts.handler import (
+    AlertHandlingResult,
+    AlertLogEntry,
+    AlertStatus,
+    handle_alert_build_result,
+    read_alert_log,
+    update_alert_status,
+)
 from fresh_capital.builders.cohort import (
     CohortBuildMetrics,
     CohortBuildParticipant,
@@ -63,6 +71,9 @@ __all__ = [
     "AlertRecord",
     "AlertBuildResult",
     "AlertBuildSummary",
+    "AlertHandlingResult",
+    "AlertLogEntry",
+    "AlertStatus",
     "AlertType",
     "build_fresh_capital_alert",
     "build_fresh_cohort",
@@ -82,6 +93,7 @@ __all__ = [
     "FreshCapitalDecisionMetrics",
     "FreshCapitalDecisionResult",
     "FundingEvent",
+    "handle_alert_build_result",
     "FreshAddressClassification",
     "FreshAddressMetrics",
     "MVPThresholds",
@@ -98,4 +110,6 @@ __all__ = [
     "TokenStateRecord",
     "TokenTrade",
     "TradeSide",
+    "read_alert_log",
+    "update_alert_status",
 ]
