@@ -167,11 +167,7 @@ def run_demo_end_to_end(
     output_dir = _normalize_path(request.output_dir, "output_dir")
     notification_database_path = output_dir / "notification_state.sqlite"
     notification_report_path = output_dir / "notification_report.json"
-    processed_at = as_of or (
-        demo_result.pipeline_result.alert_build_result.alert_record.window_end
-        if demo_result.pipeline_result.alert_build_result and demo_result.pipeline_result.alert_build_result.alert_record is not None
-        else datetime.now(timezone.utc)
-    )
+    processed_at = as_of or _infer_processed_at(demo_result)
     schedule_processing_results: tuple[AlertScheduleProcessingResult, ...] = ()
 
     if process_notifications and demo_result.pipeline_result.alert_build_result is not None:
@@ -477,6 +473,17 @@ def _ensure_notification_schedule(
 
 def _noop_notification_sender(_alert_record: AlertRecord, _config: AlertNotificationConfig) -> None:
     return None
+
+
+def _infer_processed_at(demo_result: DemoRunResult) -> datetime:
+    pipeline_result = demo_result.pipeline_result
+    if pipeline_result.alert_build_result is not None and pipeline_result.alert_build_result.alert_record is not None:
+        return pipeline_result.alert_build_result.alert_record.window_end
+    if pipeline_result.feature_result is not None:
+        return pipeline_result.feature_result.window_end
+    if pipeline_result.cohort_result is not None and pipeline_result.cohort_result.cohort is not None:
+        return pipeline_result.cohort_result.cohort.window_end
+    return datetime.now(timezone.utc)
 
 
 if __name__ == "__main__":
