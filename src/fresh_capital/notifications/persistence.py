@@ -11,6 +11,13 @@ from typing import Any, Callable
 
 from fresh_capital.domain.enums import AlertType, Severity, StrEnum
 from fresh_capital.domain.models import AlertRecord
+from fresh_capital.notifications.prioritization import (
+    AlertPriority,
+    classify_alert_priority,
+    log_alert_processing_order,
+    log_alert_priority_assignment,
+    normalize_alert_priority,
+)
 from fresh_capital.notifications.retry import AlertRetryStatus
 from fresh_capital.notifications.webhook import (
     AlertNotificationConfig,
@@ -56,6 +63,9 @@ class NotificationStateRecord:
     created_at: datetime
     updated_at: datetime
     sent_at: datetime | None
+    priority: AlertPriority = AlertPriority.MEDIUM
+    priority_assigned_at: datetime | None = None
+    priority_reason: str | None = None
     expiration_at: datetime | None = None
     canceled_at: datetime | None = None
     cancellation_reason: str | None = None
@@ -115,6 +125,9 @@ def initialize_notification_store(db_path: str | Path) -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 sent_at TEXT,
+                priority TEXT NOT NULL,
+                priority_assigned_at TEXT,
+                priority_reason TEXT,
                 expiration_at TEXT,
                 canceled_at TEXT,
                 cancellation_reason TEXT
@@ -145,6 +158,10 @@ def queue_notification_alert(
     *,
     max_attempts: int = 3,
     retry_delay_seconds: float = 300.0,
+    priority: AlertPriority | str | None = None,
+    priority_reason: str | None = None,
+    priority_assigned_at: datetime | None = None,
+    priority_log_path: str | Path | None = None,
     expiration_at: datetime | None = None,
     expiration_seconds: float = 3600.0,
     queued_at: datetime | None = None,
@@ -155,6 +172,12 @@ def queue_notification_alert(
         raise ValueError("max_attempts must be at least 1")
     if retry_delay_seconds < 0:
         raise ValueError("retry_delay_seconds must be non-negative")
+    normalized_priority = (
+        classify_alert_priority(alert_record)
+        if priority is None
+        else normalize_alert_priority(priority)
+    )
+    assigned_at = priority_assigned_at or queued_at or datetime.now(timezone.utc)
     if expiration_at is not None and not isinstance(expiration_at, datetime):
         raise TypeError("expiration_at must be a datetime or None")
     if expiration_seconds <= 0:
@@ -183,11 +206,21 @@ def queue_notification_alert(
         created_at=now,
         updated_at=now,
         sent_at=None,
+        priority=normalized_priority,
+        priority_assigned_at=assigned_at,
+        priority_reason=priority_reason,
         expiration_at=resolved_expiration_at,
         canceled_at=None,
         cancellation_reason=None,
     )
     _upsert_state_record(db_path, state)
+    log_alert_priority_assignment(
+        alert_id=state.alert_id,
+        priority=normalized_priority,
+        assigned_at=assigned_at,
+        reason=priority_reason or "classified",
+        log_path=priority_log_path,
+    )
 
 
 def send_and_persist_notifications(
@@ -197,6 +230,10 @@ def send_and_persist_notifications(
     *,
     sender: NotificationSender = send_single_alert_notification,
     started_at: datetime | None = None,
+    priority: AlertPriority | str | None = None,
+    priority_reason: str | None = None,
+    priority_assigned_at: datetime | None = None,
+    priority_log_path: str | Path | None = None,
     expiration_at: datetime | None = None,
     expiration_seconds: float = 3600.0,
     expiration_log_path: str | Path | None = None,
@@ -213,6 +250,10 @@ def send_and_persist_notifications(
             db_path,
             max_attempts=config.max_attempts,
             retry_delay_seconds=config.retry_delay_seconds,
+            priority=priority,
+            priority_reason=priority_reason,
+            priority_assigned_at=priority_assigned_at,
+            priority_log_path=priority_log_path,
             expiration_at=expiration_at,
             expiration_seconds=expiration_seconds,
             queued_at=started_at,
@@ -222,6 +263,7 @@ def send_and_persist_notifications(
         config,
         sender=sender,
         as_of=started_at,
+        priority_log_path=priority_log_path,
         expiration_log_path=expiration_log_path,
     )
 
@@ -232,6 +274,7 @@ def dispatch_due_notifications(
     *,
     sender: NotificationSender = send_single_alert_notification,
     as_of: datetime | None = None,
+    priority_log_path: str | Path | None = None,
     expiration_log_path: str | Path | None = None,
 ) -> tuple[NotificationDispatchResult, ...]:
     if not isinstance(config, AlertNotificationConfig):
@@ -246,6 +289,14 @@ def dispatch_due_notifications(
     states = read_due_notification_states(db_path, as_of=now)
     results: list[NotificationDispatchResult] = []
     for state in states:
+        log_alert_processing_order(
+            alert_id=state.alert_id,
+            priority=state.priority,
+            processing_order=len(results) + 1,
+            processed_at=now,
+            reason=state.priority_reason,
+            log_path=priority_log_path,
+        )
         alert_record = state.to_alert_record()
         attempt_number = state.attempt_count + 1
         try:
@@ -331,10 +382,19 @@ def read_notification_states(db_path: str | Path) -> tuple[NotificationStateReco
             """
             SELECT alert_id, token, chain, alert_type, severity, score, window_start, window_end,
                    dedup_key, payload_json, status, attempt_count, max_attempts, retry_delay_seconds,
-                   next_retry_at, last_error, created_at, updated_at, sent_at,
+                   next_retry_at, last_error, created_at, updated_at, sent_at, priority,
+                   priority_assigned_at, priority_reason,
                    expiration_at, canceled_at, cancellation_reason
             FROM notification_alerts
-            ORDER BY updated_at, alert_id
+            ORDER BY
+                CASE priority
+                    WHEN 'high' THEN 0
+                    WHEN 'medium' THEN 1
+                    WHEN 'low' THEN 2
+                    ELSE 3
+                END,
+                updated_at,
+                alert_id
             """
         ).fetchall()
     finally:
@@ -395,6 +455,7 @@ def read_due_notification_states(
         if state.next_retry_at is not None and state.next_retry_at > now:
             continue
         due_states.append(state)
+    due_states.sort(key=lambda state: (_priority_rank(state.priority), state.updated_at, state.alert_id))
     return tuple(due_states)
 
 
@@ -404,6 +465,7 @@ def resend_undelivered_notifications(
     *,
     sender: NotificationSender = send_single_alert_notification,
     as_of: datetime | None = None,
+    priority_log_path: str | Path | None = None,
     expiration_log_path: str | Path | None = None,
 ) -> tuple[NotificationDispatchResult, ...]:
     if not isinstance(config, AlertNotificationConfig):
@@ -415,8 +477,105 @@ def resend_undelivered_notifications(
         config,
         sender=sender,
         as_of=as_of,
+        priority_log_path=priority_log_path,
         expiration_log_path=expiration_log_path,
     )
+
+
+def update_notification_priority(
+    alert_id: str,
+    db_path: str | Path,
+    *,
+    priority: AlertPriority | str,
+    priority_reason: str | None = None,
+    changed_at: datetime | None = None,
+    priority_log_path: str | Path | None = None,
+) -> NotificationStateRecord:
+    normalized_priority = normalize_alert_priority(priority)
+    now = changed_at or datetime.now(timezone.utc)
+    states = read_notification_states(db_path)
+    target_state = next((state for state in states if state.alert_id == alert_id), None)
+    if target_state is None:
+        raise KeyError(f"alert_id not found: {alert_id}")
+
+    updated_state = NotificationStateRecord(
+        alert_id=target_state.alert_id,
+        token=target_state.token,
+        chain=target_state.chain,
+        alert_type=target_state.alert_type,
+        severity=target_state.severity,
+        score=target_state.score,
+        window_start=target_state.window_start,
+        window_end=target_state.window_end,
+        dedup_key=target_state.dedup_key,
+        payload_json=dict(target_state.payload_json),
+        status=target_state.status,
+        attempt_count=target_state.attempt_count,
+        max_attempts=target_state.max_attempts,
+        retry_delay_seconds=target_state.retry_delay_seconds,
+        next_retry_at=target_state.next_retry_at,
+        last_error=target_state.last_error,
+        created_at=target_state.created_at,
+        updated_at=now,
+        sent_at=target_state.sent_at,
+        priority=normalized_priority,
+        priority_assigned_at=now,
+        priority_reason=priority_reason,
+        expiration_at=target_state.expiration_at,
+        canceled_at=target_state.canceled_at,
+        cancellation_reason=target_state.cancellation_reason,
+    )
+    _upsert_state_record(db_path, updated_state)
+    from fresh_capital.notifications.prioritization import log_alert_priority_change
+    try:
+        from fresh_capital.notifications.scheduling import read_alert_schedules, _upsert_schedule_record
+    except Exception:  # noqa: BLE001 - scheduling integration is optional for reprioritization
+        read_alert_schedules = None  # type: ignore[assignment]
+        _upsert_schedule_record = None  # type: ignore[assignment]
+
+    log_alert_priority_change(
+        alert_id=alert_id,
+        priority=normalized_priority,
+        previous_priority=target_state.priority,
+        changed_at=now,
+        reason=priority_reason,
+        log_path=priority_log_path,
+    )
+
+    if read_alert_schedules is not None and _upsert_schedule_record is not None:
+        schedule_states = read_alert_schedules(db_path)
+        target_schedule = next((state for state in schedule_states if state.alert_id == alert_id), None)
+        if target_schedule is not None:
+            _upsert_schedule_record(
+                db_path,
+                target_schedule.__class__(
+                    alert_id=target_schedule.alert_id,
+                    token=target_schedule.token,
+                    chain=target_schedule.chain,
+                    alert_type=target_schedule.alert_type,
+                    severity=target_schedule.severity,
+                    score=target_schedule.score,
+                    window_start=target_schedule.window_start,
+                    window_end=target_schedule.window_end,
+                    dedup_key=target_schedule.dedup_key,
+                    payload_json=dict(target_schedule.payload_json),
+                    priority=normalized_priority,
+                    priority_assigned_at=now,
+                    priority_reason=priority_reason,
+                    schedule_kind=target_schedule.schedule_kind,
+                    scheduled_for=target_schedule.scheduled_for,
+                    interval_seconds=target_schedule.interval_seconds,
+                    delay_seconds=target_schedule.delay_seconds,
+                    status=target_schedule.status,
+                    trigger_count=target_schedule.trigger_count,
+                    next_run_at=target_schedule.next_run_at,
+                    created_at=target_schedule.created_at,
+                    updated_at=now,
+                    last_triggered_at=target_schedule.last_triggered_at,
+                    last_error=target_schedule.last_error,
+                ),
+            )
+    return updated_state
 
 
 def _updated_state_after_attempt(
@@ -449,6 +608,9 @@ def _updated_state_after_attempt(
         created_at=state.created_at,
         updated_at=updated_at,
         sent_at=sent_at if sent_at is not None else state.sent_at,
+        priority=state.priority,
+        priority_assigned_at=state.priority_assigned_at,
+        priority_reason=state.priority_reason,
         expiration_at=state.expiration_at,
         canceled_at=state.canceled_at,
         cancellation_reason=state.cancellation_reason,
@@ -465,8 +627,9 @@ def _upsert_state_record(db_path: str | Path, state: NotificationStateRecord) ->
                 alert_id, token, chain, alert_type, severity, score, window_start, window_end,
                 dedup_key, payload_json, status, attempt_count, max_attempts, retry_delay_seconds,
                 next_retry_at, last_error, created_at, updated_at, sent_at,
+                priority, priority_assigned_at, priority_reason,
                 expiration_at, canceled_at, cancellation_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(alert_id) DO UPDATE SET
                 token = excluded.token,
                 chain = excluded.chain,
@@ -486,6 +649,9 @@ def _upsert_state_record(db_path: str | Path, state: NotificationStateRecord) ->
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at,
                 sent_at = excluded.sent_at,
+                priority = excluded.priority,
+                priority_assigned_at = excluded.priority_assigned_at,
+                priority_reason = excluded.priority_reason,
                 expiration_at = excluded.expiration_at,
                 canceled_at = excluded.canceled_at,
                 cancellation_reason = excluded.cancellation_reason
@@ -510,6 +676,9 @@ def _upsert_state_record(db_path: str | Path, state: NotificationStateRecord) ->
                 state.created_at.isoformat(),
                 state.updated_at.isoformat(),
                 state.sent_at.isoformat() if state.sent_at is not None else None,
+                state.priority.value,
+                state.priority_assigned_at.isoformat() if state.priority_assigned_at is not None else None,
+                state.priority_reason,
                 state.expiration_at.isoformat() if state.expiration_at is not None else None,
                 state.canceled_at.isoformat() if state.canceled_at is not None else None,
                 state.cancellation_reason,
@@ -565,9 +734,12 @@ def _row_to_state(row: tuple[Any, ...]) -> NotificationStateRecord:
         created_at=datetime.fromisoformat(row[16]),
         updated_at=datetime.fromisoformat(row[17]),
         sent_at=datetime.fromisoformat(row[18]) if row[18] is not None else None,
-        expiration_at=datetime.fromisoformat(row[19]) if len(row) > 19 and row[19] is not None else None,
-        canceled_at=datetime.fromisoformat(row[20]) if len(row) > 20 and row[20] is not None else None,
-        cancellation_reason=row[21] if len(row) > 21 else None,
+        priority=normalize_alert_priority(row[19]),
+        priority_assigned_at=datetime.fromisoformat(row[20]) if len(row) > 20 and row[20] is not None else None,
+        priority_reason=row[21] if len(row) > 21 else None,
+        expiration_at=datetime.fromisoformat(row[22]) if len(row) > 22 and row[22] is not None else None,
+        canceled_at=datetime.fromisoformat(row[23]) if len(row) > 23 and row[23] is not None else None,
+        cancellation_reason=row[24] if len(row) > 24 else None,
     )
 
 
@@ -600,3 +772,11 @@ def _delay_as_timedelta(delay_seconds: float) -> Any:
     from datetime import timedelta
 
     return timedelta(seconds=delay_seconds)
+
+
+def _priority_rank(priority: AlertPriority) -> int:
+    if priority == AlertPriority.HIGH:
+        return 0
+    if priority == AlertPriority.MEDIUM:
+        return 1
+    return 2

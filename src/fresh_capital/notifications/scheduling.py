@@ -11,9 +11,16 @@ from typing import Any, Callable
 
 from fresh_capital.domain.enums import AlertType, Severity, StrEnum
 from fresh_capital.domain.models import AlertRecord
+from fresh_capital.notifications.prioritization import (
+    AlertPriority,
+    classify_alert_priority,
+    log_alert_priority_assignment,
+    normalize_alert_priority,
+)
 from fresh_capital.notifications.persistence import (
     NotificationDispatchResult,
     dispatch_due_notifications,
+    _priority_rank,
     send_and_persist_notifications,
 )
 from fresh_capital.notifications.webhook import (
@@ -54,6 +61,9 @@ class AlertScheduleRecord:
     window_end: datetime
     dedup_key: str
     payload_json: dict[str, Any]
+    priority: AlertPriority
+    priority_assigned_at: datetime | None
+    priority_reason: str | None
     schedule_kind: AlertScheduleKind
     scheduled_for: datetime
     interval_seconds: float | None
@@ -125,6 +135,9 @@ def initialize_alert_schedule_store(db_path: str | Path) -> None:
                 window_end TEXT NOT NULL,
                 dedup_key TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
+                priority TEXT NOT NULL,
+                priority_assigned_at TEXT,
+                priority_reason TEXT,
                 schedule_kind TEXT NOT NULL,
                 scheduled_for TEXT NOT NULL,
                 interval_seconds REAL,
@@ -152,6 +165,10 @@ def schedule_alert_notification(
     delay_seconds: float | None = None,
     interval_seconds: float | None = None,
     created_at: datetime | None = None,
+    priority: AlertPriority | str | None = None,
+    priority_reason: str | None = None,
+    priority_assigned_at: datetime | None = None,
+    priority_log_path: str | Path | None = None,
     log_path: str | Path | None = None,
 ) -> None:
     if not isinstance(alert_record, AlertRecord):
@@ -162,6 +179,12 @@ def schedule_alert_notification(
         raise ValueError("interval_seconds must be positive")
 
     now = created_at or datetime.now(timezone.utc)
+    normalized_priority = (
+        classify_alert_priority(alert_record)
+        if priority is None
+        else normalize_alert_priority(priority)
+    )
+    assigned_at = priority_assigned_at or now
     initialized_scheduled_for = _resolve_initial_schedule_time(
         scheduled_for=scheduled_for,
         delay_seconds=delay_seconds,
@@ -184,6 +207,9 @@ def schedule_alert_notification(
         window_end=alert_record.window_end,
         dedup_key=alert_record.dedup_key,
         payload_json=dict(alert_record.payload_json),
+        priority=normalized_priority,
+        priority_assigned_at=assigned_at,
+        priority_reason=priority_reason,
         schedule_kind=schedule_kind,
         scheduled_for=initialized_scheduled_for,
         interval_seconds=interval_seconds,
@@ -198,6 +224,13 @@ def schedule_alert_notification(
     )
     initialize_alert_schedule_store(db_path)
     _upsert_schedule_record(db_path, record)
+    log_alert_priority_assignment(
+        alert_id=record.alert_id,
+        priority=normalized_priority,
+        assigned_at=assigned_at,
+        reason=priority_reason or "classified",
+        log_path=priority_log_path,
+    )
     _append_schedule_log(
         log_path,
         AlertScheduleLogEntry(
@@ -221,10 +254,19 @@ def read_alert_schedules(db_path: str | Path) -> tuple[AlertScheduleRecord, ...]
         rows = conn.execute(
             """
             SELECT alert_id, token, chain, alert_type, severity, score, window_start, window_end,
-                   dedup_key, payload_json, schedule_kind, scheduled_for, interval_seconds, delay_seconds,
+                   dedup_key, payload_json, priority, priority_assigned_at, priority_reason,
+                   schedule_kind, scheduled_for, interval_seconds, delay_seconds,
                    status, trigger_count, next_run_at, created_at, updated_at, last_triggered_at, last_error
             FROM alert_schedules
-            ORDER BY scheduled_for, alert_id
+            ORDER BY
+                CASE priority
+                    WHEN 'high' THEN 0
+                    WHEN 'medium' THEN 1
+                    WHEN 'low' THEN 2
+                    ELSE 3
+                END,
+                scheduled_for,
+                alert_id
             """
         ).fetchall()
     finally:
@@ -245,6 +287,7 @@ def read_due_alert_schedules(
         if record.next_run_at is not None and record.next_run_at > now:
             continue
         due.append(record)
+    due.sort(key=lambda record: (_priority_rank(record.priority), record.next_run_at or record.scheduled_for, record.alert_id))
     return tuple(due)
 
 
@@ -254,6 +297,7 @@ def process_due_alert_schedules(
     *,
     sender: NotificationSender = send_single_alert_notification,
     as_of: datetime | None = None,
+    priority_log_path: str | Path | None = None,
     log_path: str | Path | None = None,
 ) -> tuple[AlertScheduleProcessingResult, ...]:
     if not isinstance(notification_config, AlertNotificationConfig):
@@ -272,6 +316,10 @@ def process_due_alert_schedules(
             db_path,
             sender=sender,
             started_at=now,
+            priority=schedule.priority,
+            priority_reason=schedule.priority_reason,
+            priority_assigned_at=schedule.priority_assigned_at,
+            priority_log_path=priority_log_path,
         )
         delivery_result = delivery_results[0]
         updated_schedule = _advance_schedule(
@@ -365,6 +413,9 @@ def _advance_schedule(
             window_end=schedule.window_end,
             dedup_key=schedule.dedup_key,
             payload_json=dict(schedule.payload_json),
+            priority=schedule.priority,
+            priority_assigned_at=schedule.priority_assigned_at,
+            priority_reason=schedule.priority_reason,
             schedule_kind=schedule.schedule_kind,
             scheduled_for=schedule.scheduled_for,
             interval_seconds=schedule.interval_seconds,
@@ -394,6 +445,9 @@ def _advance_schedule(
         window_end=schedule.window_end,
         dedup_key=schedule.dedup_key,
         payload_json=dict(schedule.payload_json),
+        priority=schedule.priority,
+        priority_assigned_at=schedule.priority_assigned_at,
+        priority_reason=schedule.priority_reason,
         schedule_kind=schedule.schedule_kind,
         scheduled_for=schedule.scheduled_for,
         interval_seconds=schedule.interval_seconds,
@@ -455,9 +509,10 @@ def _upsert_schedule_record(db_path: str | Path, record: AlertScheduleRecord) ->
             """
             INSERT INTO alert_schedules (
                 alert_id, token, chain, alert_type, severity, score, window_start, window_end,
-                dedup_key, payload_json, schedule_kind, scheduled_for, interval_seconds, delay_seconds,
+                dedup_key, payload_json, priority, priority_assigned_at, priority_reason,
+                schedule_kind, scheduled_for, interval_seconds, delay_seconds,
                 status, trigger_count, next_run_at, created_at, updated_at, last_triggered_at, last_error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(alert_id) DO UPDATE SET
                 token = excluded.token,
                 chain = excluded.chain,
@@ -468,6 +523,9 @@ def _upsert_schedule_record(db_path: str | Path, record: AlertScheduleRecord) ->
                 window_end = excluded.window_end,
                 dedup_key = excluded.dedup_key,
                 payload_json = excluded.payload_json,
+                priority = excluded.priority,
+                priority_assigned_at = excluded.priority_assigned_at,
+                priority_reason = excluded.priority_reason,
                 schedule_kind = excluded.schedule_kind,
                 scheduled_for = excluded.scheduled_for,
                 interval_seconds = excluded.interval_seconds,
@@ -491,6 +549,9 @@ def _upsert_schedule_record(db_path: str | Path, record: AlertScheduleRecord) ->
                 record.window_end.isoformat(),
                 record.dedup_key,
                 json.dumps(record.payload_json, sort_keys=True),
+                record.priority.value,
+                record.priority_assigned_at.isoformat() if record.priority_assigned_at is not None else None,
+                record.priority_reason,
                 record.schedule_kind.value,
                 record.scheduled_for.isoformat(),
                 record.interval_seconds,
@@ -521,17 +582,20 @@ def _row_to_schedule(row: tuple[Any, ...]) -> AlertScheduleRecord:
         window_end=datetime.fromisoformat(row[7]),
         dedup_key=row[8],
         payload_json=json.loads(row[9]),
-        schedule_kind=AlertScheduleKind(row[10]),
-        scheduled_for=datetime.fromisoformat(row[11]),
-        interval_seconds=float(row[12]) if row[12] is not None else None,
-        delay_seconds=float(row[13]) if row[13] is not None else None,
-        status=AlertScheduleStatus(row[14]),
-        trigger_count=int(row[15]),
-        next_run_at=datetime.fromisoformat(row[16]) if row[16] is not None else None,
-        created_at=datetime.fromisoformat(row[17]),
-        updated_at=datetime.fromisoformat(row[18]),
-        last_triggered_at=datetime.fromisoformat(row[19]) if row[19] is not None else None,
-        last_error=row[20],
+        priority=normalize_alert_priority(row[10]),
+        priority_assigned_at=datetime.fromisoformat(row[11]) if row[11] is not None else None,
+        priority_reason=row[12],
+        schedule_kind=AlertScheduleKind(row[13]),
+        scheduled_for=datetime.fromisoformat(row[14]),
+        interval_seconds=float(row[15]) if row[15] is not None else None,
+        delay_seconds=float(row[16]) if row[16] is not None else None,
+        status=AlertScheduleStatus(row[17]),
+        trigger_count=int(row[18]),
+        next_run_at=datetime.fromisoformat(row[19]) if row[19] is not None else None,
+        created_at=datetime.fromisoformat(row[20]),
+        updated_at=datetime.fromisoformat(row[21]),
+        last_triggered_at=datetime.fromisoformat(row[22]) if row[22] is not None else None,
+        last_error=row[23],
     )
 
 
