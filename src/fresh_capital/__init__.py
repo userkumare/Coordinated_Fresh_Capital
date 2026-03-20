@@ -11,6 +11,11 @@ from fresh_capital.classifiers.fresh_address import (
     FreshAddressMetrics,
     classify_fresh_address,
 )
+from fresh_capital.detectors.fresh_capital import (
+    FreshCapitalDecisionMetrics,
+    FreshCapitalDecisionResult,
+    detect_fresh_capital_flow,
+)
 from fresh_capital.extractors.token_features import (
     TokenFeatureExtractionResult,
     TokenFeatureMetrics,
@@ -62,9 +67,12 @@ __all__ = [
     "CohortThresholds",
     "CohortTokenPosition",
     "ConfirmationThresholds",
+    "detect_fresh_capital_flow",
     "DistributionThresholds",
     "extract_token_detection_features",
     "FreshAddressThresholds",
+    "FreshCapitalDecisionMetrics",
+    "FreshCapitalDecisionResult",
     "FundingEvent",
     "FreshAddressClassification",
     "FreshAddressMetrics",

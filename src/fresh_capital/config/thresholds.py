@@ -27,6 +27,7 @@ class AccumulationThresholds:
     min_buyers: int = 3
     max_sync_buy_spread_min: int = 240
     min_token_concentration: float = 0.45
+    max_top_participant_share: float = 0.70
     min_buy_sell_ratio: float = 2.5
     max_sell_back_pct: float = 0.15
     min_liquidity_usd: float = 150000.0
