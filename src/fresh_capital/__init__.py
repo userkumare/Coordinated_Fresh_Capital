@@ -1,5 +1,11 @@
 """Core package for the Fresh Capital Flow Strategy MVP."""
 
+from fresh_capital.builders.cohort import (
+    CohortBuildMetrics,
+    CohortBuildParticipant,
+    CohortBuildResult,
+    build_fresh_cohort,
+)
 from fresh_capital.classifiers.fresh_address import (
     FreshAddressClassification,
     FreshAddressMetrics,
@@ -41,8 +47,12 @@ __all__ = [
     "AddressRecord",
     "AlertRecord",
     "AlertType",
+    "build_fresh_cohort",
     "classify_fresh_address",
     "Cohort",
+    "CohortBuildMetrics",
+    "CohortBuildParticipant",
+    "CohortBuildResult",
     "CohortMember",
     "CohortThresholds",
     "CohortTokenPosition",
