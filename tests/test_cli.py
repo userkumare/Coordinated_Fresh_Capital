@@ -10,6 +10,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -41,9 +42,12 @@ class FinalCliTests(unittest.TestCase):
             self.assertIn("manifest_path", summary)
             self.assertIn("run_id", summary)
             self.assertIn("artifacts_summary_path", summary)
+            self.assertIn("validation_report_path", summary)
+            self.assertTrue(summary["validation_passed"])
             self.assertTrue((output_dir / "pipeline_result.json").exists())
             self.assertTrue((output_dir / "notification_report.json").exists())
             self.assertTrue((output_dir / "artifacts_summary.json").exists())
+            self.assertTrue((output_dir / "final_validation_report.json").exists())
             self.assertTrue(Path(summary["manifest_path"]).exists())
             self.assertTrue((output_dir / "manifests").exists())
             self.assertEqual(stderr_lines[0]["event"], "run_started")
@@ -72,6 +76,7 @@ class FinalCliTests(unittest.TestCase):
             self.assertEqual(summary["notification_sent_count"], 1)
             self.assertIn("manifest_path", summary)
             self.assertIn("artifacts_summary_path", summary)
+            self.assertIn("validation_report_path", summary)
             self.assertTrue((Path(temp_dir) / "pipeline_result.json").exists())
 
     def test_status_command_retrieves_latest_completed_run(self) -> None:
@@ -106,6 +111,7 @@ class FinalCliTests(unittest.TestCase):
         self.assertEqual(status_exit_code, 0)
         self.assertEqual(status_payload["run_id"], summary["run_id"])
         self.assertTrue(status_payload["artifacts_summary"]["all_artifacts_present"])
+        self.assertTrue(status_payload["validation_report"]["validation_passed"])
         self.assertEqual(status_payload["report"]["processed_successfully_count"], 1)
         self.assertEqual(status_payload["report"]["pending_count"], 0)
         self.assertEqual(status_payload["report"]["failed_count"], 0)
@@ -162,6 +168,35 @@ class FinalCliTests(unittest.TestCase):
         self.assertEqual(stderr_lines[-1]["event"], "run_failed")
         self.assertEqual(stderr_lines[-1]["error_type"], "FileNotFoundError")
         self.assertIn("missing-fixture.json", stderr_lines[-1]["message"])
+
+    def test_validation_report_captures_pending_notifications(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stdout = StringIO()
+            stderr = StringIO()
+
+            def sender(*_args: Any, **_kwargs: Any) -> None:
+                raise RuntimeError("always failing")
+
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(
+                    [
+                        "--fixture-path",
+                        str(FIXTURE_PATH),
+                        "--output-dir",
+                        str(Path(temp_dir)),
+                    ],
+                    sender=sender,
+                )
+
+            summary = json.loads(stdout.getvalue())
+            validation_report = json.loads((Path(temp_dir) / "final_validation_report.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(summary["validation_passed"])
+        self.assertFalse(validation_report["validation_passed"])
+        self.assertEqual(validation_report["notification_status_report"]["status_check"]["pending_count"], 1)
+        self.assertEqual(validation_report["notification_status_report"]["status_check"]["failed_count"], 0)
+        self.assertEqual(validation_report["notification_status_report"]["status_check"]["all_processed"], False)
 
 
 if __name__ == "__main__":

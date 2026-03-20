@@ -19,14 +19,17 @@ from fresh_capital.manifest import (
     RunManifestArtifacts,
     RunManifestNotificationSummary,
     RunManifestPipelineSummary,
+    build_run_validation_report,
     build_run_artifacts_summary,
     list_run_manifests,
     main as manifest_main,
     read_run_artifacts_summary,
     read_latest_run_manifest,
     read_run_manifest,
+    read_run_validation_report,
     write_run_artifacts_summary,
     write_run_manifest,
+    write_run_validation_report,
 )
 
 
@@ -65,6 +68,7 @@ class RunManifestTests(unittest.TestCase):
             self.assertTrue((output_dir / "notification_report.json").exists())
             self.assertTrue((output_dir / "notification_status_report.json").exists())
             self.assertTrue((output_dir / "artifacts_summary.json").exists())
+            self.assertTrue((output_dir / "final_validation_report.json").exists())
             artifacts_summary = read_run_artifacts_summary(output_dir / "artifacts_summary.json")
             self.assertTrue(artifacts_summary.all_artifacts_present)
             self.assertEqual(artifacts_summary.missing_artifacts, ())
@@ -72,6 +76,11 @@ class RunManifestTests(unittest.TestCase):
             written_copy = write_run_artifacts_summary(artifacts_summary, copy_path)
             copied_summary = read_run_artifacts_summary(written_copy)
             self.assertEqual(copied_summary.to_dict(), artifacts_summary.to_dict())
+            validation_report = read_run_validation_report(output_dir / "final_validation_report.json")
+            validation_copy = write_run_validation_report(validation_report, output_dir / "final_validation_report.copy.json")
+            copied_validation = read_run_validation_report(validation_copy)
+            self.assertTrue(validation_report.validation_passed)
+            self.assertEqual(copied_validation.to_dict(), validation_report.to_dict())
 
         self.assertEqual(exit_code, 0)
         self.assertIsNotNone(manifest)
@@ -109,6 +118,11 @@ class RunManifestTests(unittest.TestCase):
                 status_report_path=output_dir / "notification_status_report.json",
                 artifacts_summary_path=output_dir / "artifacts_summary.json",
             )
+            validation_report = build_run_validation_report(
+                manifest,
+                status_report_path=output_dir / "notification_status_report.json",
+                artifacts_summary_path=output_dir / "artifacts_summary.json",
+            )
 
         self.assertEqual(exit_code, 0)
         assert manifest is not None
@@ -117,6 +131,7 @@ class RunManifestTests(unittest.TestCase):
         self.assertFalse(manifest.notification_summary.notifications_processed)
         self.assertEqual(manifest.notification_summary.total_alerts, 0)
         self.assertTrue(artifacts_summary.all_artifacts_present)
+        self.assertTrue(validation_report.validation_passed)
 
     def test_read_latest_manifest_and_specific_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -285,6 +300,7 @@ class RunManifestTests(unittest.TestCase):
             latest_payload = json.loads(latest_stdout.getvalue())
             list_payload = json.loads(list_stdout.getvalue())
             show_payload = json.loads(show_stdout.getvalue())
+            validation_payload = json.loads((output_dir / "final_validation_report.json").read_text(encoding="utf-8"))
 
             bad_manifest = Path(temp_dir) / "bad.json"
             bad_manifest.write_text(json.dumps({"bad": True}), encoding="utf-8")
@@ -292,9 +308,12 @@ class RunManifestTests(unittest.TestCase):
                 read_run_manifest(bad_manifest)
             with self.assertRaises(ValueError):
                 read_run_artifacts_summary(bad_manifest)
+            with self.assertRaises(ValueError):
+                read_run_validation_report(bad_manifest)
 
         self.assertEqual(latest_payload["run_id"], show_payload["run_id"])
         self.assertEqual(len(list_payload), 1)
+        self.assertTrue(validation_payload["validation_passed"])
 
 
 if __name__ == "__main__":

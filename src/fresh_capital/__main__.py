@@ -13,12 +13,15 @@ from fresh_capital.demo.runner import DEFAULT_DEMO_FIXTURE_PATH, DemoRunRequest,
 from fresh_capital.manifest import (
     build_run_artifacts_summary,
     build_run_manifest,
+    build_run_validation_report,
     ensure_run_artifacts_complete,
     read_latest_run_manifest,
     read_run_artifacts_summary,
     read_run_manifest,
+    read_run_validation_report,
     write_run_artifacts_summary,
     write_run_manifest,
+    write_run_validation_report,
 )
 from fresh_capital.notifications.verification import (
     build_alert_completion_status_report,
@@ -76,7 +79,20 @@ def main(
         artifacts_summary_path=artifacts_summary_path,
     )
     write_run_artifacts_summary(artifacts_summary, artifacts_summary_path)
-    summary = _build_summary(result, manifest_path=manifest.manifest_path, run_id=manifest.run_id)
+    validation_report_path = args.output_dir.resolve() / "final_validation_report.json"
+    validation_report = build_run_validation_report(
+        manifest,
+        status_report_path=result.demo_result.written_artifacts.summary_json_path.parent / "notification_status_report.json",
+        artifacts_summary_path=artifacts_summary_path,
+    )
+    write_run_validation_report(validation_report, validation_report_path)
+    summary = _build_summary(
+        result,
+        manifest_path=manifest.manifest_path,
+        run_id=manifest.run_id,
+        validation_report=validation_report,
+        validation_report_path=validation_report_path,
+    )
     _emit_progress(
         "run_completed",
         output_dir=str(args.output_dir),
@@ -117,6 +133,15 @@ def _main_status(argv: list[str] | None = None) -> int:
                 status_report_path=report_path,
                 artifacts_summary_path=artifacts_summary_path,
             )
+        validation_report_path = manifest.output_dir / "final_validation_report.json"
+        if validation_report_path.exists():
+            validation_report = read_run_validation_report(validation_report_path)
+        else:
+            validation_report = build_run_validation_report(
+                manifest,
+                status_report_path=report_path,
+                artifacts_summary_path=artifacts_summary_path,
+            )
 
         payload = {
             "artifacts_summary": artifacts_summary.to_dict(),
@@ -124,6 +149,8 @@ def _main_status(argv: list[str] | None = None) -> int:
             "manifest_path": str(manifest.manifest_path),
             "notification_status_report_path": str(report_path),
             "output_dir": str(manifest.output_dir),
+            "validation_report": validation_report.to_dict(),
+            "validation_report_path": str(validation_report_path),
             "report": report.to_dict(),
             "run_id": manifest.run_id,
         }
@@ -179,7 +206,14 @@ def _build_status_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_summary(result: Any, *, manifest_path: Path, run_id: str) -> dict[str, Any]:
+def _build_summary(
+    result: Any,
+    *,
+    manifest_path: Path,
+    run_id: str,
+    validation_report: Any,
+    validation_report_path: Path,
+) -> dict[str, Any]:
     pipeline_result = result.demo_result.pipeline_result
     report = result.notification_report
     alerts_triggered = 1 if pipeline_result.alert_build_result and pipeline_result.alert_build_result.is_alert_built else 0
@@ -192,10 +226,12 @@ def _build_summary(result: Any, *, manifest_path: Path, run_id: str) -> dict[str
         "notification_report_path": str(result.notification_report_path),
         "notification_status_report_path": str(result.demo_result.written_artifacts.summary_json_path.parent / "notification_status_report.json"),
         "artifacts_summary_path": str(result.demo_result.written_artifacts.summary_json_path.parent / "artifacts_summary.json"),
+        "validation_report_path": str(validation_report_path),
         "notification_sent_count": report.notification_summary.sent_count,
         "notification_total_alerts": report.notification_summary.total_alerts,
         "notifications_processed": notifications_processed,
-        "artifacts_complete": True,
+        "artifacts_complete": validation_report.validation_passed,
+        "validation_passed": validation_report.validation_passed,
         "manifest_path": str(manifest_path),
         "output_dir": str(result.demo_result.written_artifacts.summary_json_path.parent),
         "pipeline_result_path": str(result.demo_result.written_artifacts.summary_json_path),

@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from fresh_capital.demo.runner import DemoEndToEndResult
+from fresh_capital.notifications.verification import (
+    AlertCompletionStatusReport,
+    build_alert_completion_status_report,
+    read_alert_completion_status_report,
+)
 
 
 DEFAULT_MANIFESTS_DIR = Path("artifacts/final_run/manifests")
@@ -146,6 +151,26 @@ class RunArtifactsSummary:
             "output_dir": str(self.output_dir),
             "summary_json_path": str(self.summary_json_path),
             "summary_pretty_json_path": str(self.summary_pretty_json_path),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RunValidationReport:
+    generated_at: datetime
+    run_id: str
+    manifest_path: Path
+    artifacts_summary: RunArtifactsSummary
+    notification_status_report: AlertCompletionStatusReport
+    validation_passed: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "artifacts_summary": self.artifacts_summary.to_dict(),
+            "generated_at": self.generated_at.isoformat(),
+            "manifest_path": str(self.manifest_path),
+            "notification_status_report": self.notification_status_report.to_dict(),
+            "run_id": self.run_id,
+            "validation_passed": self.validation_passed,
         }
 
 
@@ -311,6 +336,65 @@ def read_run_artifacts_summary(summary_path: str | Path) -> RunArtifactsSummary:
     path = _normalize_path(summary_path).resolve()
     payload = json.loads(path.read_text(encoding="utf-8"))
     return _run_artifacts_summary_from_payload(payload)
+
+
+def build_run_validation_report(
+    manifest: RunManifest,
+    *,
+    status_report_path: str | Path | None = None,
+    artifacts_summary_path: str | Path | None = None,
+) -> RunValidationReport:
+    if not isinstance(manifest, RunManifest):
+        raise TypeError("manifest must be a RunManifest")
+
+    output_dir = manifest.output_dir.resolve()
+    normalized_status_report_path = _normalize_path(
+        status_report_path or (output_dir / "notification_status_report.json")
+    ).resolve()
+    normalized_artifacts_summary_path = _normalize_path(
+        artifacts_summary_path or (output_dir / "artifacts_summary.json")
+    ).resolve()
+
+    artifacts_summary = (
+        read_run_artifacts_summary(normalized_artifacts_summary_path)
+        if normalized_artifacts_summary_path.exists()
+        else build_run_artifacts_summary(
+            manifest,
+            status_report_path=normalized_status_report_path,
+            artifacts_summary_path=normalized_artifacts_summary_path,
+        )
+    )
+    notification_status_report = (
+        read_alert_completion_status_report(normalized_status_report_path)
+        if normalized_status_report_path.exists()
+        else build_alert_completion_status_report(
+            manifest.artifacts.notification_database_path,
+            checked_at=manifest.generated_at,
+        )
+    )
+    return RunValidationReport(
+        generated_at=manifest.generated_at,
+        run_id=manifest.run_id,
+        manifest_path=manifest.manifest_path.resolve(),
+        artifacts_summary=artifacts_summary,
+        notification_status_report=notification_status_report,
+        validation_passed=artifacts_summary.all_artifacts_present and notification_status_report.status_check.all_processed,
+    )
+
+
+def write_run_validation_report(report: RunValidationReport, report_path: str | Path) -> Path:
+    if not isinstance(report, RunValidationReport):
+        raise TypeError("report must be a RunValidationReport")
+    path = _normalize_path(report_path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def read_run_validation_report(report_path: str | Path) -> RunValidationReport:
+    path = _normalize_path(report_path).resolve()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return _run_validation_report_from_payload(payload)
 
 
 def write_run_manifest(manifest: RunManifest) -> Path:
@@ -512,6 +596,84 @@ def _run_artifacts_summary_from_payload(payload: dict[str, Any]) -> RunArtifacts
         notification_status_report_path=Path(payload["notification_status_report_path"]),
         all_artifacts_present=bool(payload["all_artifacts_present"]),
         missing_artifacts=tuple(str(item) for item in missing_artifacts_payload),
+    )
+
+
+def _alert_completion_status_report_from_payload(payload: dict[str, Any]) -> AlertCompletionStatusReport:
+    if not isinstance(payload, dict):
+        raise ValueError("notification status report must be a JSON object")
+    if "generated_at" not in payload or "db_path" not in payload or "status_check" not in payload:
+        raise ValueError("notification status report is incomplete")
+    status_check_payload = payload.get("status_check")
+    if not isinstance(status_check_payload, dict):
+        raise ValueError("status_check must be a JSON object")
+    return AlertCompletionStatusReport(
+        generated_at=datetime.fromisoformat(payload["generated_at"]),
+        db_path=Path(payload["db_path"]),
+        status_check=_alert_notification_status_check_from_payload(status_check_payload),
+        processed_successfully_count=int(payload["processed_successfully_count"]),
+        pending_count=int(payload["pending_count"]),
+        failed_count=int(payload["failed_count"]),
+        canceled_count=int(payload["canceled_count"]),
+    )
+
+
+def _alert_notification_status_check_from_payload(payload: dict[str, Any]) -> Any:
+    if not isinstance(payload, dict):
+        raise ValueError("status_check must be a JSON object")
+    for key in (
+        "checked_at",
+        "total_alerts",
+        "pending_count",
+        "sent_count",
+        "failed_count",
+        "canceled_count",
+        "pending_alert_ids",
+        "sent_alert_ids",
+        "failed_alert_ids",
+        "canceled_alert_ids",
+        "all_processed",
+    ):
+        if key not in payload:
+            raise ValueError(f"{key} is required")
+    from fresh_capital.notifications.verification import AlertNotificationStatusCheck
+
+    return AlertNotificationStatusCheck(
+        checked_at=datetime.fromisoformat(payload["checked_at"]),
+        total_alerts=int(payload["total_alerts"]),
+        pending_count=int(payload["pending_count"]),
+        sent_count=int(payload["sent_count"]),
+        failed_count=int(payload["failed_count"]),
+        canceled_count=int(payload["canceled_count"]),
+        pending_alert_ids=tuple(payload["pending_alert_ids"]),
+        sent_alert_ids=tuple(payload["sent_alert_ids"]),
+        failed_alert_ids=tuple(payload["failed_alert_ids"]),
+        canceled_alert_ids=tuple(payload["canceled_alert_ids"]),
+        all_processed=bool(payload["all_processed"]),
+    )
+
+
+def _run_validation_report_from_payload(payload: dict[str, Any]) -> RunValidationReport:
+    if not isinstance(payload, dict):
+        raise ValueError("validation report root must be a JSON object")
+    for key in ("generated_at", "run_id", "manifest_path", "artifacts_summary", "notification_status_report", "validation_passed"):
+        if key not in payload:
+            raise ValueError(f"{key} is required")
+
+    artifacts_summary_payload = payload.get("artifacts_summary")
+    notification_status_report_payload = payload.get("notification_status_report")
+    if not isinstance(artifacts_summary_payload, dict):
+        raise ValueError("artifacts_summary must be a JSON object")
+    if not isinstance(notification_status_report_payload, dict):
+        raise ValueError("notification_status_report must be a JSON object")
+
+    return RunValidationReport(
+        generated_at=datetime.fromisoformat(payload["generated_at"]),
+        run_id=str(payload["run_id"]),
+        manifest_path=Path(payload["manifest_path"]),
+        artifacts_summary=_run_artifacts_summary_from_payload(artifacts_summary_payload),
+        notification_status_report=_alert_completion_status_report_from_payload(notification_status_report_payload),
+        validation_passed=bool(payload["validation_passed"]),
     )
 
 
