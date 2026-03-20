@@ -1,0 +1,107 @@
+{
+  "chain": "ethereum",
+  "token": {
+    "address": "0xtoken",
+    "symbol": "ABC"
+  },
+  "market_snapshot": {
+    "snapshot_id": "snapshot-1",
+    "chain": "ethereum",
+    "token_address": "0xtoken",
+    "token_symbol": "ABC",
+    "captured_at": "2026-03-20T12:00:00+00:00",
+    "price_usd": 1.0,
+    "liquidity_usd": 150000.0,
+    "volume_24h_usd": 400000.0,
+    "holders_count": 4200,
+    "market_cap_usd": 1000000.0,
+    "is_shortable": true,
+    "short_liquidity_usd": 50000.0
+  },
+  "participants": [
+    {
+      "address": {
+        "address": "0xaddr1",
+        "chain": "ethereum",
+        "first_seen_at": "2026-03-13T12:00:00+00:00",
+        "last_seen_at": "2026-03-20T12:00:00+00:00",
+        "address_age_days": 7,
+        "previous_tx_count": 5,
+        "distinct_tokens_before_window": 3,
+        "service_type": "none",
+        "is_contract": false,
+        "labels": [
+          "normalized"
+        ]
+      },
+      "funding_event": {
+        "event_id": "fund-1",
+        "address": "0xaddr1",
+        "chain": "ethereum",
+        "funded_at": "2026-03-20T11:25:00+00:00",
+        "source_address": "0xfunder1",
+        "source_type": "exchange",
+        "asset_symbol": "USDC",
+        "amount": 10000.0,
+        "amount_usd": 10000.0,
+        "tx_hash": "0xtx1"
+      }
+    },
+    {
+      "address": {
+        "address": "0xaddr2",
+        "chain": "ethereum",
+        "first_seen_at": "2026-03-13T12:00:00+00:00",
+        "last_seen_at": "2026-03-20T12:00:00+00:00",
+        "address_age_days": 7,
+        "previous_tx_count": 5,
+        "distinct_tokens_before_window": 3,
+        "service_type": "none",
+        "is_contract": false,
+        "labels": [
+          "normalized"
+        ]
+      },
+      "funding_event": {
+        "event_id": "fund-2",
+        "address": "0xaddr2",
+        "chain": "ethereum",
+        "funded_at": "2026-03-20T11:40:00+00:00",
+        "source_address": "0xfunder2",
+        "source_type": "exchange",
+        "asset_symbol": "USDC",
+        "amount": 8000.0,
+        "amount_usd": 8000.0,
+        "tx_hash": "0xtx2"
+      }
+    },
+    {
+      "address": {
+        "address": "0xaddr3",
+        "chain": "ethereum",
+        "first_seen_at": "2026-03-13T12:00:00+00:00",
+        "last_seen_at": "2026-03-20T12:00:00+00:00",
+        "address_age_days": 7,
+        "previous_tx_count": 5,
+        "distinct_tokens_before_window": 3,
+        "service_type": "none",
+        "is_contract": false,
+        "labels": [
+          "normalized"
+        ]
+      },
+      "funding_event": {
+        "event_id": "fund-3",
+        "address": "0xaddr3",
+        "chain": "ethereum",
+        "funded_at": "2026-03-20T11:55:00+00:00",
+        "source_address": "0xfunder3",
+        "source_type": "exchange",
+        "asset_symbol": "USDC",
+        "amount": 7000.0,
+        "amount_usd": 7000.0,
+        "tx_hash": "0xtx3"
+      }
+    }
+  ]
+}
