@@ -6,17 +6,24 @@ import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
+from io import StringIO
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fresh_capital.demo.runner import DemoRunRequest, load_demo_fixture, run_demo_fixture
+from fresh_capital.demo.runner import main, run_demo_end_to_end
 
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "step10_demo_positive.json"
 
 
 class DemoRunnerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.now = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+
     def test_valid_fixture_load_and_successful_pipeline_execution(self) -> None:
         fixture_summary, pipeline_request = load_demo_fixture(FIXTURE_PATH)
 
@@ -125,6 +132,78 @@ class DemoRunnerTests(unittest.TestCase):
         })
         self.assertIn("stage_statuses", summary["pipeline"])
         self.assertIsInstance(summary["pipeline"]["stage_statuses"], list)
+
+    def test_end_to_end_demo_execution_from_fixture_writes_notification_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = run_demo_end_to_end(
+                DemoRunRequest(
+                    fixture_path=FIXTURE_PATH,
+                    output_dir=Path(temp_dir),
+                ),
+                as_of=self.now,
+                sender=lambda _record, _config: None,
+            )
+
+            pipeline_summary = json.loads(result.demo_result.written_artifacts.summary_json_path.read_text(encoding="utf-8"))
+            notification_report = json.loads(result.notification_report_path.read_text(encoding="utf-8"))
+            self.assertTrue(result.demo_result.written_artifacts.summary_json_path.exists())
+            self.assertTrue(result.notification_database_path.exists())
+            self.assertTrue(result.notification_report_path.exists())
+
+        self.assertEqual(pipeline_summary["pipeline"]["alert_built"], True)
+        self.assertEqual(notification_report["notification_summary"]["total_alerts"], 1)
+        self.assertEqual(notification_report["notification_summary"]["sent_count"], 1)
+        self.assertEqual(notification_report["schedule_summary"]["completed_count"], 1)
+
+    def test_no_alert_path_writes_empty_notification_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            negative_fixture = Path(temp_dir) / "negative.json"
+            payload = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+            payload["market_snapshot"]["liquidity_usd"] = 200000.0
+            negative_fixture.write_text(json.dumps(payload), encoding="utf-8")
+
+            result = run_demo_end_to_end(
+                DemoRunRequest(
+                    fixture_path=negative_fixture,
+                    output_dir=Path(temp_dir) / "out",
+                ),
+                as_of=self.now,
+                sender=lambda _record, _config: None,
+            )
+
+            notification_report = json.loads(result.notification_report_path.read_text(encoding="utf-8"))
+
+        self.assertIsNone(result.demo_result.pipeline_result.alert_build_result)
+        self.assertEqual(notification_report["notification_summary"]["total_alerts"], 0)
+        self.assertEqual(notification_report["schedule_summary"]["total_alerts"], 0)
+        self.assertEqual(result.schedule_processing_results, ())
+
+    def test_cli_uses_default_fixture_and_prints_shell_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "--output-dir",
+                        str(Path(temp_dir)),
+                    ],
+                    sender=lambda _record, _config: None,
+                )
+
+            payload = json.loads(stdout.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["fixture_path"], str(FIXTURE_PATH))
+        self.assertTrue(payload["pipeline_alert_built"])
+        self.assertEqual(payload["notification_sent_count"], 1)
+        self.assertEqual(payload["schedule_completed_count"], 1)
+
+    def test_invalid_cli_argument_handling(self) -> None:
+        with redirect_stderr(StringIO()):
+            with self.assertRaises(SystemExit) as exc_info:
+                main(["--unknown-option"])
+
+        self.assertEqual(exc_info.exception.code, 2)
 
 
 if __name__ == "__main__":

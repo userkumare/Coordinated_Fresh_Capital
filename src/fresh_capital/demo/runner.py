@@ -2,20 +2,31 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from fresh_capital.domain.models import AddressRecord, AlertRecord, FundingEvent, TokenMarketSnapshot
+from fresh_capital.notifications.ops import NotificationOpsReport, build_notification_ops_report
+from fresh_capital.notifications.scheduling import (
+    AlertScheduleProcessingResult,
+    process_due_alert_schedules,
+    schedule_alert_notification,
+)
 from fresh_capital.domain.enums import ServiceType, SourceType
-from fresh_capital.domain.models import AddressRecord, FundingEvent, TokenMarketSnapshot
+from fresh_capital.notifications.webhook import AlertNotificationConfig
 from fresh_capital.pipeline.orchestrator import (
     FreshCapitalPipelineRequest,
     FreshCapitalPipelineResult,
     PipelineParticipantInput,
     run_fresh_capital_pipeline,
 )
+
+
+DEFAULT_DEMO_FIXTURE_PATH = Path(__file__).resolve().parents[3] / "fixtures" / "step10_demo_positive.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +58,15 @@ class DemoRunResult:
     fixture_summary: DemoFixtureSummary
     pipeline_result: FreshCapitalPipelineResult
     written_artifacts: DemoWrittenArtifacts
+
+
+@dataclass(frozen=True, slots=True)
+class DemoEndToEndResult:
+    demo_result: DemoRunResult
+    notification_database_path: Path
+    notification_report_path: Path
+    notification_report: NotificationOpsReport
+    schedule_processing_results: tuple[AlertScheduleProcessingResult, ...]
 
 
 def load_demo_fixture(fixture_path: str | Path) -> tuple[DemoFixtureSummary, FreshCapitalPipelineRequest]:
@@ -130,6 +150,76 @@ def run_demo_fixture(request: DemoRunRequest) -> DemoRunResult:
         pipeline_result=pipeline_result,
         written_artifacts=written_artifacts,
     )
+
+
+def run_demo_end_to_end(
+    request: DemoRunRequest,
+    *,
+    sender: Callable[[AlertRecord, AlertNotificationConfig], None] | None = None,
+    as_of: datetime | None = None,
+    process_notifications: bool = True,
+) -> DemoEndToEndResult:
+    """Run the fixture demo and optionally process the resulting notification state."""
+    if not isinstance(request, DemoRunRequest):
+        raise TypeError("request must be a DemoRunRequest")
+
+    demo_result = run_demo_fixture(request)
+    output_dir = _normalize_path(request.output_dir, "output_dir")
+    notification_database_path = output_dir / "notification_state.sqlite"
+    notification_report_path = output_dir / "notification_report.json"
+    processed_at = as_of or (
+        demo_result.pipeline_result.alert_build_result.alert_record.window_end
+        if demo_result.pipeline_result.alert_build_result and demo_result.pipeline_result.alert_build_result.alert_record is not None
+        else datetime.now(timezone.utc)
+    )
+    schedule_processing_results: tuple[AlertScheduleProcessingResult, ...] = ()
+
+    if process_notifications and demo_result.pipeline_result.alert_build_result is not None:
+        alert_record = demo_result.pipeline_result.alert_build_result.alert_record
+        if alert_record is not None:
+            _ensure_notification_schedule(
+                alert_record,
+                notification_database_path,
+                scheduled_for=processed_at,
+            )
+            schedule_processing_results = process_due_alert_schedules(
+                notification_database_path,
+                AlertNotificationConfig(webhook_url="http://example.invalid"),
+                sender=sender or _noop_notification_sender,
+                as_of=processed_at,
+            )
+
+    notification_report = build_notification_ops_report(notification_database_path, as_of=processed_at)
+    _write_json(notification_report_path, notification_report.to_dict(), indent=None)
+    return DemoEndToEndResult(
+        demo_result=demo_result,
+        notification_database_path=notification_database_path,
+        notification_report_path=notification_report_path,
+        notification_report=notification_report,
+        schedule_processing_results=schedule_processing_results,
+    )
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    sender: Callable[[AlertRecord, AlertNotificationConfig], None] | None = None,
+) -> int:
+    """Run the deterministic demo from the shell."""
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    request = DemoRunRequest(
+        fixture_path=args.fixture_path,
+        output_dir=args.output_dir,
+    )
+    result = run_demo_end_to_end(
+        request,
+        sender=sender,
+        as_of=args.as_of,
+        process_notifications=not args.skip_notification_processing,
+    )
+    print(json.dumps(_build_shell_summary(result), sort_keys=True))
+    return 0
 
 
 def _build_market_snapshot(
@@ -320,3 +410,74 @@ def _parse_datetime(value: str) -> datetime:
         return datetime.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(f"invalid datetime value: {value}") from exc
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the deterministic Fresh Capital demo.")
+    parser.add_argument(
+        "--fixture-path",
+        type=Path,
+        default=DEFAULT_DEMO_FIXTURE_PATH,
+        help="Path to a demo fixture JSON file.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Directory where deterministic artifacts will be written.",
+    )
+    parser.add_argument(
+        "--as-of",
+        type=_parse_datetime,
+        default=None,
+        help="Optional ISO-8601 processing timestamp.",
+    )
+    parser.add_argument(
+        "--skip-notification-processing",
+        action="store_true",
+        help="Load and run the demo without scheduling or processing notification state.",
+    )
+    return parser
+
+
+def _build_shell_summary(result: DemoEndToEndResult) -> dict[str, Any]:
+    pipeline_result = result.demo_result.pipeline_result
+    notification_summary = result.notification_report.notification_summary
+    schedule_summary = result.notification_report.schedule_summary
+    return {
+        "fixture_path": str(result.demo_result.fixture_summary.fixture_path),
+        "notification_report_path": str(result.notification_report_path),
+        "output_dir": str(result.demo_result.written_artifacts.summary_json_path.parent),
+        "pipeline_result_path": str(result.demo_result.written_artifacts.summary_json_path),
+        "pipeline_alert_built": bool(
+            pipeline_result.alert_build_result is not None and pipeline_result.alert_build_result.is_alert_built
+        ),
+        "notification_failed_count": notification_summary.failed_count,
+        "notification_processed": bool(result.schedule_processing_results or notification_summary.total_alerts > 0),
+        "notification_sent_count": notification_summary.sent_count,
+        "notification_total_alerts": notification_summary.total_alerts,
+        "schedule_completed_count": schedule_summary.completed_count,
+        "schedule_total_alerts": schedule_summary.total_alerts,
+    }
+
+
+def _ensure_notification_schedule(
+    alert_record: AlertRecord,
+    db_path: str | Path,
+    *,
+    scheduled_for: datetime,
+) -> None:
+    schedule_alert_notification(
+        alert_record,
+        db_path,
+        scheduled_for=scheduled_for,
+        created_at=scheduled_for,
+    )
+
+
+def _noop_notification_sender(_alert_record: AlertRecord, _config: AlertNotificationConfig) -> None:
+    return None
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
