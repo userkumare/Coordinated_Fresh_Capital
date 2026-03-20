@@ -30,6 +30,13 @@ from fresh_capital.notifications.persistence import (
     resend_undelivered_notifications,
     send_and_persist_notifications,
 )
+from fresh_capital.notifications.expiration import (
+    AlertExpirationEvent,
+    AlertExpirationLogEntry,
+    NotificationExpirationResult,
+    cancel_expired_notifications,
+    read_alert_expiration_log,
+)
 from fresh_capital.notifications.scheduling import (
     AlertScheduleEvent,
     AlertScheduleKind,
@@ -57,6 +64,8 @@ __all__ = [
     "AlertNotificationConfig",
     "AlertNotificationResult",
     "AlertNotificationStatus",
+    "AlertExpirationEvent",
+    "AlertExpirationLogEntry",
     "AlertScheduleEvent",
     "AlertScheduleKind",
     "AlertScheduleLogEntry",
@@ -71,9 +80,11 @@ __all__ = [
     "NotificationDispatchResult",
     "NotificationStateRecord",
     "NotificationStatus",
+    "NotificationExpirationResult",
     "AlertNotificationStatusCheck",
     "AlertNotificationVerificationReport",
     "execute_alert_delivery_with_retry",
+    "cancel_expired_notifications",
     "check_alert_notification_status",
     "dispatch_due_notifications",
     "initialize_notification_store",
@@ -84,6 +95,7 @@ __all__ = [
     "read_alert_schedule_log",
     "read_alert_schedules",
     "read_due_alert_schedules",
+    "read_alert_expiration_log",
     "read_notification_attempts",
     "read_notification_states",
     "read_notification_attempt_log",

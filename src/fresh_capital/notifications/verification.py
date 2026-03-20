@@ -35,15 +35,19 @@ class AlertNotificationStatusCheck:
     pending_count: int
     sent_count: int
     failed_count: int
+    canceled_count: int
     pending_alert_ids: tuple[str, ...]
     sent_alert_ids: tuple[str, ...]
     failed_alert_ids: tuple[str, ...]
+    canceled_alert_ids: tuple[str, ...]
     all_processed: bool
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "all_processed": self.all_processed,
             "checked_at": self.checked_at.isoformat(),
+            "canceled_alert_ids": list(self.canceled_alert_ids),
+            "canceled_count": self.canceled_count,
             "failed_alert_ids": list(self.failed_alert_ids),
             "failed_count": self.failed_count,
             "pending_alert_ids": list(self.pending_alert_ids),
@@ -89,11 +93,14 @@ def check_alert_notification_status(
     pending_ids: list[str] = []
     sent_ids: list[str] = []
     failed_ids: list[str] = []
+    canceled_ids: list[str] = []
     for state in states:
         if state.status == NotificationStatus.PENDING:
             pending_ids.append(state.alert_id)
         elif state.status == NotificationStatus.SENT:
             sent_ids.append(state.alert_id)
+        elif state.status == NotificationStatus.CANCELED:
+            canceled_ids.append(state.alert_id)
         else:
             failed_ids.append(state.alert_id)
 
@@ -103,9 +110,11 @@ def check_alert_notification_status(
         pending_count=len(pending_ids),
         sent_count=len(sent_ids),
         failed_count=len(failed_ids),
+        canceled_count=len(canceled_ids),
         pending_alert_ids=tuple(pending_ids),
         sent_alert_ids=tuple(sent_ids),
         failed_alert_ids=tuple(failed_ids),
+        canceled_alert_ids=tuple(canceled_ids),
         all_processed=not pending_ids,
     )
 
