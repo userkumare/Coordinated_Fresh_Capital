@@ -16,6 +16,8 @@ from fresh_capital.domain.models import AlertRecord
 class AlertStatus(StrEnum):
     CREATED = "created"
     PROCESSED = "processed"
+    DELIVERED = "delivered"
+    FAILED = "failed"
     REJECTED = "rejected"
 
 

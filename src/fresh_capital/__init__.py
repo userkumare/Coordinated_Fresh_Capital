@@ -5,6 +5,11 @@ from fresh_capital.alerts.builder import (
     AlertBuildSummary,
     build_fresh_capital_alert,
 )
+from fresh_capital.alerts.delivery import (
+    AlertDeliveryResult,
+    deliver_logged_alerts,
+    read_delivered_alerts,
+)
 from fresh_capital.alerts.handler import (
     AlertHandlingResult,
     AlertLogEntry,
@@ -33,6 +38,15 @@ from fresh_capital.extractors.token_features import (
     TokenFeatureExtractionResult,
     TokenFeatureMetrics,
     extract_token_detection_features,
+)
+from fresh_capital.pipeline.orchestrator import (
+    FreshCapitalPipelineRequest,
+    FreshCapitalPipelineResult,
+    PipelineParticipantInput,
+    PipelineParticipantClassificationResult,
+    PipelineStageStatus,
+    PipelineStageTrace,
+    run_fresh_capital_pipeline,
 )
 from fresh_capital.config.thresholds import (
     AccumulationThresholds,
@@ -71,6 +85,7 @@ __all__ = [
     "AlertRecord",
     "AlertBuildResult",
     "AlertBuildSummary",
+    "AlertDeliveryResult",
     "AlertHandlingResult",
     "AlertLogEntry",
     "AlertStatus",
@@ -87,11 +102,14 @@ __all__ = [
     "CohortTokenPosition",
     "ConfirmationThresholds",
     "detect_fresh_capital_flow",
+    "deliver_logged_alerts",
     "DistributionThresholds",
     "extract_token_detection_features",
     "FreshAddressThresholds",
     "FreshCapitalDecisionMetrics",
     "FreshCapitalDecisionResult",
+    "FreshCapitalPipelineRequest",
+    "FreshCapitalPipelineResult",
     "FundingEvent",
     "handle_alert_build_result",
     "FreshAddressClassification",
@@ -110,6 +128,12 @@ __all__ = [
     "TokenStateRecord",
     "TokenTrade",
     "TradeSide",
+    "PipelineParticipantInput",
+    "PipelineParticipantClassificationResult",
+    "PipelineStageStatus",
+    "PipelineStageTrace",
     "read_alert_log",
+    "read_delivered_alerts",
+    "run_fresh_capital_pipeline",
     "update_alert_status",
 ]
