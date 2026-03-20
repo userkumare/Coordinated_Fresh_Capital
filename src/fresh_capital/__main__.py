@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fresh_capital.demo.runner import DEFAULT_DEMO_FIXTURE_PATH, DemoRunRequest, run_demo_end_to_end
+from fresh_capital.manifest import build_run_manifest, write_run_manifest
 from fresh_capital.notifications.webhook import AlertNotificationConfig
 
 
@@ -47,7 +48,11 @@ def main(
         _emit_error("run_failed", exc)
         return 1
 
-    summary = _build_summary(result)
+    manifest_root = args.output_dir.resolve() / "manifests"
+    manifest = build_run_manifest(result, manifests_dir=manifest_root)
+    write_run_manifest(manifest)
+    _emit_progress("manifest_written", manifest_path=str(manifest.manifest_path), run_id=manifest.run_id)
+    summary = _build_summary(result, manifest_path=manifest.manifest_path, run_id=manifest.run_id)
     _emit_progress(
         "run_completed",
         output_dir=str(args.output_dir),
@@ -86,7 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_summary(result: Any) -> dict[str, Any]:
+def _build_summary(result: Any, *, manifest_path: Path, run_id: str) -> dict[str, Any]:
     pipeline_result = result.demo_result.pipeline_result
     report = result.notification_report
     alerts_triggered = 1 if pipeline_result.alert_build_result and pipeline_result.alert_build_result.is_alert_built else 0
@@ -100,8 +105,10 @@ def _build_summary(result: Any) -> dict[str, Any]:
         "notification_sent_count": report.notification_summary.sent_count,
         "notification_total_alerts": report.notification_summary.total_alerts,
         "notifications_processed": notifications_processed,
+        "manifest_path": str(manifest_path),
         "output_dir": str(result.demo_result.written_artifacts.summary_json_path.parent),
         "pipeline_result_path": str(result.demo_result.written_artifacts.summary_json_path),
+        "run_id": run_id,
         "schedule_total_alerts": report.schedule_summary.total_alerts,
     }
 

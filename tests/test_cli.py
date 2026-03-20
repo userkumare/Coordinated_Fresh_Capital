@@ -38,9 +38,14 @@ class FinalCliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(summary["alerts_triggered"], 1)
             self.assertEqual(summary["notifications_processed"], 1)
+            self.assertIn("manifest_path", summary)
+            self.assertIn("run_id", summary)
             self.assertTrue((output_dir / "pipeline_result.json").exists())
             self.assertTrue((output_dir / "notification_report.json").exists())
+            self.assertTrue(Path(summary["manifest_path"]).exists())
+            self.assertTrue((output_dir / "manifests").exists())
             self.assertEqual(stderr_lines[0]["event"], "run_started")
+            self.assertEqual(stderr_lines[1]["event"], "manifest_written")
             self.assertEqual(stderr_lines[-1]["event"], "run_completed")
 
     def test_provided_fixture_argument_executes_end_to_end(self) -> None:
@@ -63,6 +68,7 @@ class FinalCliTests(unittest.TestCase):
             self.assertEqual(summary["fixture_path"], str(FIXTURE_PATH))
             self.assertEqual(summary["alerts_triggered"], 1)
             self.assertEqual(summary["notification_sent_count"], 1)
+            self.assertIn("manifest_path", summary)
             self.assertTrue((Path(temp_dir) / "pipeline_result.json").exists())
 
     def test_invalid_cli_argument_handling(self) -> None:
