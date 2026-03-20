@@ -30,6 +30,13 @@ from fresh_capital.notifications.persistence import (
     resend_undelivered_notifications,
     send_and_persist_notifications,
 )
+from fresh_capital.notifications.verification import (
+    AlertNotificationStatusCheck,
+    AlertNotificationVerificationReport,
+    check_alert_notification_status,
+    verify_alert_notification_processing,
+    write_alert_notification_verification_report,
+)
 
 __all__ = [
     "AlertNotificationAttempt",
@@ -44,7 +51,10 @@ __all__ = [
     "NotificationDispatchResult",
     "NotificationStateRecord",
     "NotificationStatus",
+    "AlertNotificationStatusCheck",
+    "AlertNotificationVerificationReport",
     "execute_alert_delivery_with_retry",
+    "check_alert_notification_status",
     "dispatch_due_notifications",
     "initialize_notification_store",
     "queue_notification_alert",
@@ -53,6 +63,8 @@ __all__ = [
     "read_notification_states",
     "read_notification_attempt_log",
     "resend_undelivered_notifications",
+    "verify_alert_notification_processing",
+    "write_alert_notification_verification_report",
     "send_alert_notifications",
     "send_and_persist_notifications",
     "send_single_alert_notification",

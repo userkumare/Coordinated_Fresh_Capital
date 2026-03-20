@@ -77,6 +77,13 @@ from fresh_capital.notifications.persistence import (
     resend_undelivered_notifications,
     send_and_persist_notifications,
 )
+from fresh_capital.notifications.verification import (
+    AlertNotificationStatusCheck,
+    AlertNotificationVerificationReport,
+    check_alert_notification_status,
+    verify_alert_notification_processing,
+    write_alert_notification_verification_report,
+)
 from fresh_capital.pipeline.orchestrator import (
     FreshCapitalPipelineRequest,
     FreshCapitalPipelineResult,
@@ -140,6 +147,8 @@ __all__ = [
     "NotificationDispatchResult",
     "NotificationStateRecord",
     "NotificationStatus",
+    "AlertNotificationStatusCheck",
+    "AlertNotificationVerificationReport",
     "build_fresh_capital_alert",
     "build_fresh_cohort",
     "classify_fresh_address",
@@ -187,6 +196,7 @@ __all__ = [
     "PipelineStageStatus",
     "PipelineStageTrace",
     "dispatch_due_notifications",
+    "check_alert_notification_status",
     "initialize_notification_store",
     "load_demo_fixture",
     "queue_notification_alert",
@@ -199,6 +209,8 @@ __all__ = [
     "resend_undelivered_notifications",
     "run_fresh_capital_pipeline",
     "run_demo_fixture",
+    "verify_alert_notification_processing",
+    "write_alert_notification_verification_report",
     "send_and_persist_notifications",
     "send_single_alert_notification",
     "send_alert_notifications",
