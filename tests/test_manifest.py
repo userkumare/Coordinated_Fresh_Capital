@@ -113,6 +113,7 @@ class RunManifestTests(unittest.TestCase):
             )
             manifest = read_latest_run_manifest(output_dir / "manifests")
             self.assertTrue(manifest is not None and manifest.manifest_path.exists())
+            self.assertTrue((output_dir / "final_validation_report.json").exists())
             artifacts_summary = build_run_artifacts_summary(
                 manifest,
                 status_report_path=output_dir / "notification_status_report.json",
